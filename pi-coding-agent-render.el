@@ -395,8 +395,9 @@ Returns non-nil if TEXT matched a built-in command and was handled."
             (_ (funcall handler)))
           t)))))
 
-(defun pi-coding-agent--prepare-and-send (text)
-  "Prepare chat buffer state and send TEXT to pi.
+(defun pi-coding-agent--prepare-and-send (text &optional images)
+  "Prepare chat buffer state and send TEXT with optional IMAGES to pi.
+IMAGES is a list of image plists for the RPC prompt command.
 Built-in slash commands are dispatched locally via the dispatch table.
 Other slash commands (extensions, skills, prompts) are sent to pi.
 Regular text is displayed locally for responsiveness, then sent.
@@ -413,7 +414,7 @@ Status transitions are handled by pi events (agent_start, agent_end)."
     (pi-coding-agent--display-user-message text (current-time))
     (setq pi-coding-agent--local-user-message text)
     (setq pi-coding-agent--assistant-header-shown nil)
-    (pi-coding-agent--send-prompt text))))
+    (pi-coding-agent--send-prompt text images))))
 
 (defun pi-coding-agent--process-followup-queue ()
   "Dequeue and send the oldest follow-up message.
@@ -688,6 +689,17 @@ Updates buffer-local state and renders display updates."
               (pi-coding-agent--display-user-message
                text
                (pi-coding-agent--ms-to-time timestamp))
+              ;; Display any attached images
+              (when (vectorp content)
+                (let ((inhibit-read-only t))
+                  (pi-coding-agent--with-scroll-preservation
+                    (save-excursion
+                      (goto-char (point-max))
+                      (seq-doseq (block content)
+                        (when (equal (plist-get block :type) "image")
+                          (pi-coding-agent--insert-image-placeholder
+                           (plist-get block :data)
+                           (plist-get block :mimeType))))))))
               ;; Reset so next assistant message shows its header
               (setq pi-coding-agent--assistant-header-shown nil))))
          ("custom"
@@ -1546,6 +1558,11 @@ Shows preview lines with expandable toggle for long output."
          (string-trim-right display-content "\n+")
          lang
          is-edit-diff))
+      ;; Image blocks from tool results (e.g., read tool on image files)
+      (seq-doseq (block content)
+        (when (equal (plist-get block :type) "image")
+          (pi-coding-agent--insert-image-placeholder
+           (plist-get block :data) (plist-get block :mimeType))))
       ;; Error indicator
       (when is-error
         (insert (propertize "[error]" 'face 'pi-coding-agent-tool-error) "\n"))
@@ -1901,6 +1918,163 @@ For example: '+ 7     code' or '-12     code'"
         (overlay-put line-ov 'priority pi-coding-agent--diff-line-priority)
         (overlay-put line-ov 'pi-coding-agent-diff-overlay t)))))
 
+;;;; Inline Image Display
+
+(defun pi-coding-agent--show-images-p ()
+  "Return non-nil if images should be shown in the current buffer."
+  (cond
+   ((derived-mode-p 'pi-coding-agent-chat-mode) pi-coding-agent-show-images-in-chat)
+   ((derived-mode-p 'pi-coding-agent-input-mode) pi-coding-agent-show-images-in-input)
+   (t nil)))
+
+(defun pi-coding-agent--image-type-from-mime (mime-type)
+  "Return Emacs image type symbol for MIME-TYPE.
+Falls back to `png' for unrecognized types."
+  (pcase mime-type
+    ("image/png" 'png)
+    ("image/jpeg" 'jpeg)
+    ("image/gif" 'gif)
+    ("image/webp" 'webp)
+    (_ 'png)))
+
+(defun pi-coding-agent--image-file-p (path)
+  "Return MIME type string if PATH is a supported image file, nil otherwise."
+  (when (and path (file-exists-p path) (not (file-directory-p path)))
+    (pcase (downcase (or (file-name-extension path) ""))
+      ("png"  "image/png")
+      ("jpg"  "image/jpeg")
+      ("jpeg" "image/jpeg")
+      ("gif"  "image/gif")
+      ("webp" "image/webp")
+      (_      nil))))
+
+(defun pi-coding-agent--attach-image-file (path)
+  "Read image file at PATH and attach it as a pending image.
+Inserts a placeholder in the buffer and adds the image to
+`pi-coding-agent--pending-images' for the next send.
+Returns non-nil if the image was attached successfully."
+  (let ((mime (pi-coding-agent--image-file-p path)))
+    (when mime
+      (condition-case err
+          (let* ((data-bytes (with-temp-buffer
+                               (set-buffer-multibyte nil)
+                               (insert-file-contents-literally path)
+                               (buffer-string)))
+                 (base64-data (base64-encode-string data-bytes t)))
+            (push (list :type "image" :data base64-data :mimeType mime)
+                  pi-coding-agent--pending-images)
+            (pi-coding-agent--insert-image-placeholder base64-data mime)
+            t)
+        (file-error
+         (message "Pi: Cannot read image file: %s" (error-message-string err))
+         nil)))))
+
+(defun pi-coding-agent--create-image-from-data (data-bytes mime-type)
+  "Create an Emacs image from DATA-BYTES with MIME-TYPE.
+DATA-BYTES is a unibyte string of raw image data.
+Respects `pi-coding-agent-image-max-width' and
+`pi-coding-agent-image-max-height'."
+  (create-image data-bytes
+                (pi-coding-agent--image-type-from-mime mime-type)
+                t  ; DATA-P: data is a string, not a filename
+                :max-width pi-coding-agent-image-max-width
+                :max-height pi-coding-agent-image-max-height))
+
+(defun pi-coding-agent--add-image-overlay (start end data-bytes mime-type)
+  "Add image display overlay between START and END.
+DATA-BYTES is raw image data, MIME-TYPE is e.g. \"image/png\".
+The overlay replaces the placeholder text with the image.
+Returns the overlay."
+  (let* ((img (pi-coding-agent--create-image-from-data data-bytes mime-type))
+         (ov (make-overlay start end)))
+    (overlay-put ov 'display img)
+    (overlay-put ov 'pi-coding-agent-image t)
+    (push ov pi-coding-agent--image-overlays)
+    ov))
+
+(defun pi-coding-agent--insert-image-placeholder (base64-data mime-type)
+  "Insert image placeholder text and optionally display as inline preview.
+BASE64-DATA is the base64-encoded image data.
+MIME-TYPE is e.g. \"image/png\".
+The placeholder text carries the image data as text properties so
+overlays can be recreated by scanning the buffer."
+  (let* ((data-bytes (base64-decode-string base64-data))
+         (size (length data-bytes))
+         (placeholder (format "[image: %s, %s bytes]" mime-type size))
+         (start (point)))
+    (insert (propertize placeholder
+                        'face 'pi-coding-agent-image-placeholder
+                        'pi-coding-agent-image-data base64-data
+                        'pi-coding-agent-image-mime mime-type))
+    (when (pi-coding-agent--show-images-p)
+      (pi-coding-agent--add-image-overlay start (point) data-bytes mime-type))
+    (insert "\n")))
+
+(defun pi-coding-agent--remove-all-image-overlays ()
+  "Remove all image display overlays in the current buffer."
+  (mapc #'delete-overlay pi-coding-agent--image-overlays)
+  (setq pi-coding-agent--image-overlays nil))
+
+(defun pi-coding-agent--refresh-image-overlays (show)
+  "Recreate or remove image overlays in the current buffer.
+If SHOW is non-nil, scan buffer for image placeholders and create
+overlays.  Otherwise remove all image overlays."
+  (pi-coding-agent--remove-all-image-overlays)
+  (when show
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let ((data (get-text-property (point) 'pi-coding-agent-image-data))
+                (mime (get-text-property (point) 'pi-coding-agent-image-mime)))
+            (if data
+                (let* ((start (point))
+                       (end (next-single-property-change
+                             start 'pi-coding-agent-image-data nil (point-max)))
+                       (bytes (base64-decode-string data)))
+                  (pi-coding-agent--add-image-overlay start end bytes mime)
+                  (goto-char end))
+              (goto-char (or (next-single-property-change
+                              (point) 'pi-coding-agent-image-data)
+                             (point-max))))))))))
+
+(defun pi-coding-agent-toggle-images-in-chat ()
+  "Toggle inline image previews in the chat buffer."
+  (interactive)
+  (setq pi-coding-agent-show-images-in-chat
+        (not pi-coding-agent-show-images-in-chat))
+  (when-let* ((chat-buf (pi-coding-agent--get-chat-buffer)))
+    (with-current-buffer chat-buf
+      (pi-coding-agent--refresh-image-overlays pi-coding-agent-show-images-in-chat)))
+  (message "Pi: Chat images %s"
+           (if pi-coding-agent-show-images-in-chat "shown" "hidden")))
+
+(defun pi-coding-agent-toggle-images-in-input ()
+  "Toggle inline image previews in the input buffer."
+  (interactive)
+  (setq pi-coding-agent-show-images-in-input
+        (not pi-coding-agent-show-images-in-input))
+  (when-let* ((input-buf (pi-coding-agent--get-input-buffer)))
+    (with-current-buffer input-buf
+      (pi-coding-agent--refresh-image-overlays pi-coding-agent-show-images-in-input)))
+  (message "Pi: Input images %s"
+           (if pi-coding-agent-show-images-in-input "shown" "hidden")))
+
+(defun pi-coding-agent-toggle-images ()
+  "Toggle inline image previews in both chat and input buffers."
+  (interactive)
+  ;; Toggle based on chat setting (both buffers follow it)
+  (let ((new-state (not pi-coding-agent-show-images-in-chat)))
+    (setq pi-coding-agent-show-images-in-chat new-state
+          pi-coding-agent-show-images-in-input new-state)
+    (when-let* ((chat-buf (pi-coding-agent--get-chat-buffer)))
+      (with-current-buffer chat-buf
+        (pi-coding-agent--refresh-image-overlays new-state)))
+    (when-let* ((input-buf (pi-coding-agent--get-input-buffer)))
+      (with-current-buffer input-buf
+        (pi-coding-agent--refresh-image-overlays new-state)))
+    (message "Pi: Images %s" (if new-state "shown" "hidden"))))
+
 ;;;; Compaction Display
 
 (defun pi-coding-agent--display-compaction-result (tokens-before summary &optional timestamp)
@@ -2242,12 +2416,23 @@ Each text block is rendered independently for proper formatting."
           (pcase role
             ("user"
              (flush-tools)
-             (let* ((text (pi-coding-agent--extract-message-text message))
+             (let* ((content (plist-get message :content))
+                    (text (pi-coding-agent--extract-message-text message))
                     (timestamp (pi-coding-agent--ms-to-time (plist-get message :timestamp))))
                (when (and text (not (string-empty-p text)))
                  (pi-coding-agent--append-to-chat
                   (concat "\n" (pi-coding-agent--make-separator "You" timestamp) "\n"
-                          text "\n"))))
+                          text "\n"))
+                 ;; Display any attached images
+                 (when (vectorp content)
+                   (let ((inhibit-read-only t))
+                     (save-excursion
+                       (goto-char (point-max))
+                       (seq-doseq (block content)
+                         (when (equal (plist-get block :type) "image")
+                           (pi-coding-agent--insert-image-placeholder
+                            (plist-get block :data)
+                            (plist-get block :mimeType)))))))))
              (setq prev-role "user"))
             ("assistant"
              (when (not (equal prev-role "assistant"))

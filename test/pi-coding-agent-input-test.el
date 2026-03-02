@@ -23,7 +23,7 @@
   (let ((sent-text nil))
     (pi-coding-agent-test-with-mock-session "/tmp/pi-coding-agent-test-send1/"
       (cl-letf (((symbol-function 'pi-coding-agent--send-prompt)
-                 (lambda (text) (setq sent-text text))))
+                 (lambda (text &optional _images) (setq sent-text text))))
         (with-current-buffer "*pi-coding-agent-input:/tmp/pi-coding-agent-test-send1/*"
           (insert "Hello, pi!")
           (pi-coding-agent-send)
@@ -35,7 +35,7 @@
   (let ((send-called nil))
     (pi-coding-agent-test-with-mock-session "/tmp/pi-coding-agent-test-send2/"
       (cl-letf (((symbol-function 'pi-coding-agent--send-prompt)
-                 (lambda (_) (setq send-called t))))
+                 (lambda (_ &optional _images) (setq send-called t))))
         (with-current-buffer "*pi-coding-agent-input:/tmp/pi-coding-agent-test-send2/*"
           (pi-coding-agent-send)
           (should-not send-called))))))
@@ -45,7 +45,7 @@
   (let ((send-called nil))
     (pi-coding-agent-test-with-mock-session "/tmp/pi-coding-agent-test-send3/"
       (cl-letf (((symbol-function 'pi-coding-agent--send-prompt)
-                 (lambda (_) (setq send-called t))))
+                 (lambda (_ &optional _images) (setq send-called t))))
         (with-current-buffer "*pi-coding-agent-input:/tmp/pi-coding-agent-test-send3/*"
           (insert "   \n\t  ")
           (pi-coding-agent-send)
@@ -143,7 +143,7 @@
             (cl-letf (((symbol-function 'pi-coding-agent-compact)
                        (lambda (&optional args) (setq compact-called t compact-args args)))
                       ((symbol-function 'pi-coding-agent--send-prompt)
-                       (lambda (_) (setq prompt-sent t))))
+                       (lambda (_ &optional _images) (setq prompt-sent t))))
               (pi-coding-agent-send))
             ;; Should have called compact function with no args
             (should compact-called)
@@ -189,7 +189,7 @@ Uses :false (JSON false representation) to verify boolean normalization."
       (setq pi-coding-agent--status 'compacting)
       (setq pi-coding-agent--followup-queue '("queued message"))
       (cl-letf (((symbol-function 'pi-coding-agent--send-prompt)
-                 (lambda (text) (setq sent-text text))))
+                 (lambda (text &optional _images) (setq sent-text text))))
         (pi-coding-agent--handle-display-event
          '(:type "auto_compaction_end"
            :aborted :false
@@ -207,7 +207,7 @@ Uses :false (JSON false representation) to verify boolean normalization."
       (setq pi-coding-agent--status 'compacting)
       (setq pi-coding-agent--followup-queue '("queued message"))
       (cl-letf (((symbol-function 'pi-coding-agent--send-prompt)
-                 (lambda (text) (setq sent-text text))))
+                 (lambda (text &optional _images) (setq sent-text text))))
         ;; Simulate auto_compaction_end event (aborted)
         (pi-coding-agent--handle-display-event
          '(:type "auto_compaction_end"
@@ -434,7 +434,7 @@ When user aborts, they want to stop everything - including queued messages."
             (cl-letf (((symbol-function 'pi-coding-agent--get-process) (lambda () 'mock-proc))
                       ((symbol-function 'process-live-p) (lambda (_) t))
                       ((symbol-function 'pi-coding-agent--send-prompt)
-                       (lambda (_) (setq sent-anything t)))
+                       (lambda (_ &optional _images) (setq sent-anything t)))
                       ((symbol-function 'pi-coding-agent--rpc-async)
                        (lambda (_proc _cmd _cb) (setq sent-anything t)))
                       ((symbol-function 'message)
@@ -469,7 +469,7 @@ When user aborts, they want to stop everything - including queued messages."
             (cl-letf (((symbol-function 'pi-coding-agent--get-process) (lambda () 'mock-proc))
                       ((symbol-function 'process-live-p) (lambda (_) t))
                       ((symbol-function 'pi-coding-agent--send-prompt)
-                       (lambda (text) (setq sent-prompt text))))
+                       (lambda (text &optional _images) (setq sent-prompt text))))
               (pi-coding-agent-queue-followup))
             ;; Should send as normal prompt
             (should (equal sent-prompt "Do something else"))
@@ -647,7 +647,7 @@ correct position in the conversation."
             (cl-letf (((symbol-function 'pi-coding-agent--get-process) (lambda () 'mock-proc))
                       ((symbol-function 'process-live-p) (lambda (_) t))
                       ((symbol-function 'pi-coding-agent--send-prompt)
-                       (lambda (text) (setq sent-prompt text))))
+                       (lambda (text &optional _images) (setq sent-prompt text))))
               (pi-coding-agent-send))
             ;; Should send literal command (pi handles expansion)
             (should (equal sent-prompt "/greet world"))))
@@ -675,7 +675,7 @@ correct position in the conversation."
             (cl-letf (((symbol-function 'pi-coding-agent--get-process) (lambda () 'mock-proc))
                       ((symbol-function 'process-live-p) (lambda (_) t))
                       ((symbol-function 'pi-coding-agent--send-prompt)
-                       (lambda (_) (setq send-called t)))
+                       (lambda (_ &optional _images) (setq send-called t)))
                       ((symbol-function 'pi-coding-agent--rpc-async)
                        (lambda (_proc _cmd _cb) (setq send-called t)))
                       ((symbol-function 'message)
@@ -973,7 +973,7 @@ On agent_end, we pop from queue and send (which displays the message)."
             (cl-letf (((symbol-function 'pi-coding-agent--get-process) (lambda () 'mock-proc))
                       ((symbol-function 'process-live-p) (lambda (_) t))
                       ((symbol-function 'pi-coding-agent--send-prompt)
-                       (lambda (text) (setq sent-prompt text)))
+                       (lambda (text &optional _images) (setq sent-prompt text)))
                       ((symbol-function 'pi-coding-agent--fontify-timer-stop) #'ignore)
                       ((symbol-function 'pi-coding-agent--refresh-header) #'ignore))
               (pi-coding-agent--handle-display-event '(:type "agent_end")))
@@ -1014,7 +1014,7 @@ On agent_end, we pop from queue and send (which displays the message)."
             (cl-letf (((symbol-function 'pi-coding-agent--get-process) (lambda () 'mock-proc))
                       ((symbol-function 'process-live-p) (lambda (_) t))
                       ((symbol-function 'pi-coding-agent--send-prompt)
-                       (lambda (text) (push text sent-prompts)))
+                       (lambda (text &optional _images) (push text sent-prompts)))
                       ((symbol-function 'pi-coding-agent--fontify-timer-stop) #'ignore)
                       ((symbol-function 'pi-coding-agent--refresh-header) #'ignore))
               ;; First agent_end
@@ -2901,6 +2901,113 @@ display-agent-end must finalize the pending overlay with error face."
     (should (eq (key-binding (kbd "M-n")) 'pi-coding-agent-next-input))
     (should (eq (key-binding (kbd "TAB")) 'pi-coding-agent-complete))
     (should (eq (key-binding (kbd "C-c C-s")) 'pi-coding-agent-queue-steering))))
+
+;;; Image Paste and Send
+
+(defconst pi-coding-agent-test--png-b64
+  (concat "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAA"
+          "DElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+  "Base64-encoded 1x1 pixel PNG for image tests.")
+
+(ert-deftest pi-coding-agent-test-yank-media-stores-pending ()
+  "yank-media handler stores image in pending-images."
+  (with-temp-buffer
+    (pi-coding-agent-input-mode)
+    (let ((pi-coding-agent--pending-images nil)
+          (pi-coding-agent-show-images-in-input nil)
+          (data (base64-decode-string
+                 pi-coding-agent-test--png-b64)))
+      (pi-coding-agent--yank-media-image-handler
+       'image/png data)
+      (should (= 1 (length pi-coding-agent--pending-images)))
+      (let ((img (car pi-coding-agent--pending-images)))
+        (should (equal (plist-get img :type) "image"))
+        (should (equal (plist-get img :mimeType) "image/png"))
+        (should (stringp (plist-get img :data)))))))
+
+(ert-deftest pi-coding-agent-test-yank-media-inserts-placeholder ()
+  "yank-media handler inserts placeholder text."
+  (with-temp-buffer
+    (pi-coding-agent-input-mode)
+    (let ((pi-coding-agent--pending-images nil)
+          (pi-coding-agent-show-images-in-input nil)
+          (data (base64-decode-string
+                 pi-coding-agent-test--png-b64)))
+      (pi-coding-agent--yank-media-image-handler
+       'image/png data)
+      (should (string-match-p "\\[image: image/png"
+                              (buffer-string))))))
+
+(ert-deftest pi-coding-agent-test-send-includes-images ()
+  "pi-coding-agent-send passes images to send-prompt."
+  (let ((sent-images nil))
+    (pi-coding-agent-test-with-mock-session
+        "/tmp/pi-coding-agent-test-send-img/"
+      (with-current-buffer
+          (format "*pi-coding-agent-input:%s*"
+                  "/tmp/pi-coding-agent-test-send-img/")
+        (insert "Describe this image")
+        (setq pi-coding-agent--pending-images
+              (list (list :type "image"
+                          :data pi-coding-agent-test--png-b64
+                          :mimeType "image/png")))
+        (cl-letf (((symbol-function
+                    'pi-coding-agent--send-prompt)
+                   (lambda (_text &optional images)
+                     (setq sent-images images))))
+          (pi-coding-agent-send))
+        (should (= 1 (length sent-images)))
+        (should (equal (plist-get (car sent-images) :type)
+                       "image"))
+        (should (null pi-coding-agent--pending-images))))))
+
+(ert-deftest pi-coding-agent-test-send-prompt-rpc-images ()
+  "send-prompt includes images array in RPC command."
+  (let ((sent-command nil)
+        (fake-proc (start-process "test" nil "cat")))
+    (unwind-protect
+        (with-temp-buffer
+          (pi-coding-agent-chat-mode)
+          (let ((pi-coding-agent--process fake-proc))
+            (cl-letf (((symbol-function
+                        'pi-coding-agent--get-chat-buffer)
+                       (lambda () (current-buffer)))
+                      ((symbol-function
+                        'pi-coding-agent--rpc-async)
+                       (lambda (_proc cmd _cb)
+                         (setq sent-command cmd))))
+              (pi-coding-agent--send-prompt
+               "Describe this"
+               (list (list :type "image"
+                           :data pi-coding-agent-test--png-b64
+                           :mimeType "image/png")))
+              (should (plist-get sent-command :images))
+              (should (vectorp
+                       (plist-get sent-command :images)))
+              (should (= 1 (length
+                            (plist-get sent-command
+                                       :images)))))))
+      (delete-process fake-proc))))
+
+(ert-deftest pi-coding-agent-test-send-prompt-no-images-nil ()
+  "send-prompt omits images key when nil."
+  (let ((sent-command nil)
+        (fake-proc (start-process "test" nil "cat")))
+    (unwind-protect
+        (with-temp-buffer
+          (pi-coding-agent-chat-mode)
+          (let ((pi-coding-agent--process fake-proc))
+            (cl-letf (((symbol-function
+                        'pi-coding-agent--get-chat-buffer)
+                       (lambda () (current-buffer)))
+                      ((symbol-function
+                        'pi-coding-agent--rpc-async)
+                       (lambda (_proc cmd _cb)
+                         (setq sent-command cmd))))
+              (pi-coding-agent--send-prompt "Hello" nil)
+              (should-not
+               (plist-member sent-command :images)))))
+      (delete-process fake-proc))))
 
 (provide 'pi-coding-agent-input-test)
 ;;; pi-coding-agent-input-test.el ends here

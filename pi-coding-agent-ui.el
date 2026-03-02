@@ -176,6 +176,31 @@ Takes effect for new sessions; existing input buffers keep their mode."
   :type 'boolean
   :group 'pi-coding-agent)
 
+(defcustom pi-coding-agent-show-images-in-chat t
+  "Whether to display inline image previews in the chat buffer.
+When non-nil, images from tool results and user messages are shown
+as inline previews.  The underlying placeholder text is always present;
+toggling only affects the overlay display."
+  :type 'boolean
+  :group 'pi-coding-agent)
+
+(defcustom pi-coding-agent-show-images-in-input t
+  "Whether to display inline image previews in the input buffer.
+When non-nil, images pasted via `yank-media' are shown as inline
+previews above the placeholder text."
+  :type 'boolean
+  :group 'pi-coding-agent)
+
+(defcustom pi-coding-agent-image-max-width 400
+  "Maximum width in pixels for inline image previews."
+  :type 'natnum
+  :group 'pi-coding-agent)
+
+(defcustom pi-coding-agent-image-max-height 300
+  "Maximum height in pixels for inline image previews."
+  :type 'natnum
+  :group 'pi-coding-agent)
+
 (defcustom pi-coding-agent-copy-raw-markdown nil
   "Whether to copy raw markdown from the chat buffer.
 When non-nil, copy commands (`kill-ring-save', `kill-region') preserve
@@ -248,6 +273,11 @@ Subtle blue-tinted background derived from the current theme."
 (defface pi-coding-agent-error-notice
   '((t :inherit error))
   "Face for error notifications from the server."
+  :group 'pi-coding-agent)
+
+(defface pi-coding-agent-image-placeholder
+  '((t :inherit shadow :slant italic))
+  "Face for image placeholder text (e.g., [image: image/png, 12345 bytes])."
   :group 'pi-coding-agent)
 
 ;;;; Dynamic Face Computation
@@ -366,6 +396,7 @@ escape targets.")
     (define-key map (kbd "<tab>") #'pi-coding-agent-toggle-tool-section)
     (define-key map (kbd "RET") #'pi-coding-agent-visit-file)
     (define-key map (kbd "<return>") #'pi-coding-agent-visit-file)
+    (define-key map (kbd "I") #'pi-coding-agent-toggle-images-in-chat)
     map)
   "Keymap for `pi-coding-agent-chat-mode'.")
 
@@ -871,6 +902,15 @@ Extracted from session_info entries when session is loaded or switched.")
   "List of available commands from pi.
 Each entry is a plist with :name, :description, :source.
 Source is \"prompt\", \"extension\", or \"skill\".")
+
+(defvar-local pi-coding-agent--image-overlays nil
+  "List of image display overlays in current buffer.
+Used by toggle commands to show/hide inline image previews.")
+
+(defvar-local pi-coding-agent--pending-images nil
+  "List of images to attach to the next prompt.
+Each entry is a plist (:type \"image\" :data BASE64 :mimeType MIME).
+Populated by `yank-media' paste, cleared on send.")
 
 (defvar pi-coding-agent--builtin-commands
   '(("compact" :handler pi-coding-agent-compact       :args optional)
@@ -1484,8 +1524,9 @@ Safely handles dead buffers by checking liveness first."
 
 ;;;; Sending Infrastructure
 
-(defun pi-coding-agent--send-prompt (text)
-  "Send TEXT as a prompt to the pi process.
+(defun pi-coding-agent--send-prompt (text &optional images)
+  "Send TEXT as a prompt to the pi process with optional IMAGES.
+IMAGES is a list of image plists (:type \"image\" :data BASE64 :mimeType MIME).
 Slash commands are sent literally - pi handles expansion.
 Shows an error message if process is unavailable."
   (let ((proc (pi-coding-agent--get-process))
@@ -1498,9 +1539,10 @@ Shows an error message if process is unavailable."
       (pi-coding-agent--abort-send chat-buf)
       (message "Pi: Process died - try M-x pi-coding-agent-reload or C-c C-p R"))
      (t
-      (pi-coding-agent--rpc-async proc
-                     (list :type "prompt" :message text)
-                     #'ignore)))))
+      (let ((command (list :type "prompt" :message text)))
+        (when images
+          (setq command (plist-put command :images (vconcat images))))
+        (pi-coding-agent--rpc-async proc command #'ignore))))))
 
 (defun pi-coding-agent--abort-send (chat-buf)
   "Clean up after a failed send attempt in CHAT-BUF.

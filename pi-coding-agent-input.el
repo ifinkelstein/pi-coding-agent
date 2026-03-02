@@ -262,16 +262,24 @@ syntax highlighting while preserving mode identity and keybindings."
   (add-hook 'completion-at-point-functions #'pi-coding-agent--path-capf nil t)
   (add-hook 'post-self-insert-hook #'pi-coding-agent--maybe-complete-at nil t)
   (add-hook 'isearch-mode-hook #'pi-coding-agent--history-isearch-setup nil t)
-  (add-hook 'kill-buffer-hook #'pi-coding-agent--cleanup-input-on-kill nil t))
+  (add-hook 'kill-buffer-hook #'pi-coding-agent--cleanup-input-on-kill nil t)
+  ;; Image paste via yank-media (Emacs 29+)
+  (when (fboundp 'yank-media-handler)
+    (yank-media-handler "image/png" #'pi-coding-agent--yank-media-image-handler)
+    (yank-media-handler "image/jpeg" #'pi-coding-agent--yank-media-image-handler)
+    (yank-media-handler "image/gif" #'pi-coding-agent--yank-media-image-handler)
+    (yank-media-handler "image/webp" #'pi-coding-agent--yank-media-image-handler)))
 
 ;;;; Sending Prompts
 
 (defun pi-coding-agent--accept-input-text (text)
   "Accept TEXT from input buffer state.
-Adds TEXT to history, resets history navigation, and clears input."
+Adds TEXT to history, resets navigation, clears images and input."
   (pi-coding-agent--history-add text)
   (setq pi-coding-agent--input-ring-index nil
-        pi-coding-agent--input-saved nil)
+        pi-coding-agent--input-saved nil
+        pi-coding-agent--pending-images nil)
+  (pi-coding-agent--remove-all-image-overlays)
   (erase-buffer))
 
 (defun pi-coding-agent--queue-followup-text (chat-buf text)
@@ -284,21 +292,26 @@ Adds TEXT to history, resets history navigation, and clears input."
   "Send the current input buffer contents to pi.
 Clears the input buffer after sending.  Does nothing if buffer is empty.
 If pi is busy (sending, streaming, or compacting), queues a local follow-up.
-The /compact command is handled locally; other slash commands sent to pi."
+The /compact command is handled locally; other slash commands sent to pi.
+Any images pasted via `yank-media' are attached to the prompt."
   (interactive)
   (let* ((text (string-trim (buffer-string)))
+         (images (nreverse pi-coding-agent--pending-images))
          (chat-buf (pi-coding-agent--get-chat-buffer))
          (status (and chat-buf (buffer-local-value 'pi-coding-agent--status chat-buf)))
          (busy (and status (memq status '(streaming sending compacting)))))
     (cond
      ((string-empty-p text) nil)
+     ;; Streaming - add to local follow-up queue (images discarded)
      (busy
       (pi-coding-agent--queue-followup-text chat-buf text)
-      (message "Pi: Message queued (will send after current response)"))
+      (if images
+          (message "Pi: Message queued (images dropped — not supported in follow-ups)")
+        (message "Pi: Message queued (will send after current response)")))
      (t
       (pi-coding-agent--accept-input-text text)
       (with-current-buffer chat-buf
-        (pi-coding-agent--prepare-and-send text))))))
+        (pi-coding-agent--prepare-and-send text images))))))
 
 (defun pi-coding-agent-abort ()
   "Abort the current pi operation.
@@ -383,11 +396,19 @@ Does not trigger when @ follows alphanumeric (e.g., in email addresses)."
     (run-at-time 0 nil #'pi-coding-agent--complete-file-reference)))
 
 (defun pi-coding-agent--complete-file-reference ()
-  "Complete file reference after @."
+  "Complete file reference after @.
+Image files (.png, .jpg, .gif, .webp) are attached as inline images
+rather than inserted as text references."
   (let* ((files (pi-coding-agent--get-project-files))
          (choice (completing-read "File: " files nil nil)))
     (when (and choice (not (string-empty-p choice)))
-      (insert choice))))
+      (let ((abs-path (expand-file-name choice (pi-coding-agent--session-directory))))
+        (if (pi-coding-agent--image-file-p abs-path)
+            (progn
+              ;; Remove the @ trigger character before inserting placeholder
+              (delete-char -1)
+              (pi-coding-agent--attach-image-file abs-path))
+          (insert choice))))))
 
 (defvar-local pi-coding-agent--project-files-cache nil
   "Cached list of project files for @ completion.")
@@ -441,7 +462,8 @@ Excludes directories listed in `pi-coding-agent--file-exclude-patterns'."
 
 (defun pi-coding-agent--file-reference-capf ()
   "Completion-at-point function for @file references.
-Triggers when @ is typed, provides completion of project files."
+Triggers when @ is typed, provides completion of project files.
+Image files are automatically attached as inline images."
   (when-let* ((at-pos (save-excursion
                         (when (search-backward "@" (line-beginning-position) t)
                           (point)))))
@@ -449,6 +471,7 @@ Triggers when @ is typed, provides completion of project files."
            (end (point))
            (prefix (buffer-substring-no-properties start end))
            (files (pi-coding-agent--get-project-files))
+           (session-dir (pi-coding-agent--session-directory))
            (candidates (if (string-empty-p prefix)
                            files
                          (cl-remove-if-not
@@ -458,7 +481,18 @@ Triggers when @ is typed, provides completion of project files."
         (list start end candidates
               :exclusive 'no
               :annotation-function (lambda (_) " (file)")
-              :company-kind (lambda (_) 'file))))))
+              :company-kind (lambda (_) 'file)
+              :exit-function
+              (lambda (candidate status)
+                (when (eq status 'finished)
+                  (let ((abs-path (expand-file-name candidate session-dir)))
+                    (when (pi-coding-agent--image-file-p abs-path)
+                      ;; Remove @candidate text and replace with image placeholder
+                      (let ((ref-end (point)))
+                        (save-excursion
+                          (when (search-backward "@" (line-beginning-position) t)
+                            (delete-region (point) ref-end)))
+                        (pi-coding-agent--attach-image-file abs-path)))))))))))
 
 ;;;; Editor Features: Path Completion
 
@@ -482,7 +516,8 @@ Triggers when @ is typed, provides completion of project files."
 (defun pi-coding-agent--path-capf ()
   "Completion-at-point function for file paths.
 Completes paths starting with ./, ../, ~/, or /.
-Skips / at buffer start to allow slash command completion."
+Skips / at buffer start to allow slash command completion.
+Image files are automatically attached as inline images."
   (when-let* ((bounds (bounds-of-thing-at-point 'filename))
               (start (car bounds))
               (end (cdr bounds))
@@ -491,12 +526,38 @@ Skips / at buffer start to allow slash command completion."
               ((not (and (string-prefix-p "/" path)
                          (= start (point-min)))))
               (candidates (pi-coding-agent--path-completions path)))
-    (list start end candidates
-          :exclusive 'no
-          :annotation-function
-          (lambda (c)
-            (if (file-directory-p (expand-file-name c (pi-coding-agent--session-directory)))
-                " (dir)" " (file)")))))
+    (let ((session-dir (pi-coding-agent--session-directory)))
+      (list start end candidates
+            :exclusive 'no
+            :annotation-function
+            (lambda (c)
+              (if (file-directory-p (expand-file-name c session-dir))
+                  " (dir)" " (file)"))
+            :exit-function
+            (lambda (candidate status)
+              (when (eq status 'finished)
+                (let ((abs-path (expand-file-name candidate session-dir)))
+                  (when (pi-coding-agent--image-file-p abs-path)
+                    ;; Remove the completed path and any preceding @
+                    (let* ((path-end (point))
+                           (del-start start))
+                      (when (and (> del-start (point-min))
+                                 (eq (char-before del-start) ?@))
+                        (setq del-start (1- del-start)))
+                      (delete-region del-start path-end))
+                    (pi-coding-agent--attach-image-file abs-path)))))))))
+
+;;;; Editor Features: Image Paste
+
+(defun pi-coding-agent--yank-media-image-handler (mime-type data)
+  "Handle image paste from `yank-media'.
+MIME-TYPE is a symbol like `image/png'.  DATA is raw binary image data.
+Stores the image for attachment on next send and inserts a placeholder."
+  (let* ((mime-str (symbol-name mime-type))
+         (base64-data (base64-encode-string data t)))
+    (push (list :type "image" :data base64-data :mimeType mime-str)
+          pi-coding-agent--pending-images)
+    (pi-coding-agent--insert-image-placeholder base64-data mime-str)))
 
 ;;;; Editor Features: Message Queuing
 

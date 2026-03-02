@@ -4734,7 +4734,7 @@ causing column misalignment when horizontally scrolling."
     (cl-letf (((symbol-function 'pi-coding-agent-new-session)
                (lambda () (setq new-called t)))
               ((symbol-function 'pi-coding-agent--send-prompt)
-               (lambda (text) (setq prompt-sent text))))
+               (lambda (text &optional _images) (setq prompt-sent text))))
       (with-temp-buffer
         (pi-coding-agent-chat-mode)
         (pi-coding-agent--prepare-and-send "/new")))
@@ -4745,11 +4745,256 @@ causing column misalignment when horizontally scrolling."
   "prepare-and-send sends unknown slash commands to pi via prompt."
   (let (prompt-sent)
     (cl-letf (((symbol-function 'pi-coding-agent--send-prompt)
-               (lambda (text) (setq prompt-sent text))))
+               (lambda (text &optional _images) (setq prompt-sent text))))
       (with-temp-buffer
         (pi-coding-agent-chat-mode)
         (pi-coding-agent--prepare-and-send "/my-extension arg")))
     (should (equal prompt-sent "/my-extension arg"))))
+
+;;; Inline Images
+
+;; Minimal 1x1 red PNG for testing (avoids large binary blobs)
+(defconst pi-coding-agent-test--png-base64
+  (concat "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAA"
+          "DElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+  "Base64-encoded 1x1 pixel PNG for image tests.")
+
+(ert-deftest pi-coding-agent-test-image-type-from-mime-png ()
+  "image-type-from-mime returns png for image/png."
+  (should (eq (pi-coding-agent--image-type-from-mime "image/png") 'png)))
+
+(ert-deftest pi-coding-agent-test-image-type-from-mime-jpeg ()
+  "image-type-from-mime returns jpeg for image/jpeg."
+  (should (eq (pi-coding-agent--image-type-from-mime "image/jpeg") 'jpeg)))
+
+(ert-deftest pi-coding-agent-test-image-type-from-mime-gif ()
+  "image-type-from-mime returns gif for image/gif."
+  (should (eq (pi-coding-agent--image-type-from-mime "image/gif") 'gif)))
+
+(ert-deftest pi-coding-agent-test-image-type-from-mime-webp ()
+  "image-type-from-mime returns webp for image/webp."
+  (should (eq (pi-coding-agent--image-type-from-mime "image/webp") 'webp)))
+
+(ert-deftest pi-coding-agent-test-image-type-from-mime-unknown ()
+  "image-type-from-mime falls back to png for unknown types."
+  (should (eq (pi-coding-agent--image-type-from-mime "image/bmp") 'png)))
+
+(ert-deftest pi-coding-agent-test-insert-image-placeholder-text ()
+  "insert-image-placeholder inserts bracketed placeholder."
+  (with-temp-buffer
+    (let ((pi-coding-agent-show-images-in-chat nil)
+          (pi-coding-agent-show-images-in-input nil))
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (should (string-match-p
+               "\\[image: image/png, [0-9]+ bytes\\]"
+               (buffer-string)))
+      (should (string-suffix-p "\n" (buffer-string))))))
+
+(ert-deftest pi-coding-agent-test-insert-image-placeholder-props ()
+  "insert-image-placeholder stores data in text properties."
+  (with-temp-buffer
+    (let ((pi-coding-agent-show-images-in-chat nil)
+          (pi-coding-agent-show-images-in-input nil))
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (should (equal (get-text-property 1 'pi-coding-agent-image-data)
+                     pi-coding-agent-test--png-base64))
+      (should (equal (get-text-property 1 'pi-coding-agent-image-mime)
+                     "image/png")))))
+
+(ert-deftest pi-coding-agent-test-insert-image-no-overlay-when-off ()
+  "No overlay created when images disabled."
+  (with-temp-buffer
+    (let ((pi-coding-agent-show-images-in-chat nil)
+          (pi-coding-agent-show-images-in-input nil)
+          (pi-coding-agent--image-overlays nil))
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (should (null pi-coding-agent--image-overlays)))))
+
+(ert-deftest pi-coding-agent-test-insert-image-overlay-in-chat ()
+  "Overlay created in chat mode when images enabled."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-images-in-chat t)
+          (pi-coding-agent--image-overlays nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (should (= 1 (length pi-coding-agent--image-overlays)))
+      (should (overlay-get (car pi-coding-agent--image-overlays)
+                           'pi-coding-agent-image)))))
+
+(ert-deftest pi-coding-agent-test-insert-image-overlay-in-input ()
+  "Overlay created in input mode when images enabled."
+  (with-temp-buffer
+    (pi-coding-agent-input-mode)
+    (let ((pi-coding-agent-show-images-in-input t)
+          (pi-coding-agent--image-overlays nil))
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (should (= 1 (length pi-coding-agent--image-overlays)))
+      (should (overlay-get (car pi-coding-agent--image-overlays)
+                           'display)))))
+
+(ert-deftest pi-coding-agent-test-remove-all-image-overlays ()
+  "remove-all-image-overlays deletes all image overlays."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-images-in-chat t)
+          (pi-coding-agent--image-overlays nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (should (= 2 (length pi-coding-agent--image-overlays)))
+      (pi-coding-agent--remove-all-image-overlays)
+      (should (null pi-coding-agent--image-overlays)))))
+
+(ert-deftest pi-coding-agent-test-refresh-image-overlays-show ()
+  "refresh-image-overlays recreates from text properties."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-images-in-chat nil)
+          (pi-coding-agent--image-overlays nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (should (null pi-coding-agent--image-overlays))
+      (pi-coding-agent--refresh-image-overlays t)
+      (should (= 1 (length pi-coding-agent--image-overlays))))))
+
+(ert-deftest pi-coding-agent-test-refresh-image-overlays-hide ()
+  "refresh-image-overlays removes when show is nil."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-images-in-chat t)
+          (pi-coding-agent--image-overlays nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--insert-image-placeholder
+       pi-coding-agent-test--png-base64 "image/png")
+      (should (= 1 (length pi-coding-agent--image-overlays)))
+      (pi-coding-agent--refresh-image-overlays nil)
+      (should (null pi-coding-agent--image-overlays)))))
+
+(ert-deftest pi-coding-agent-test-show-images-p-chat ()
+  "show-images-p respects chat setting."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-images-in-chat t))
+      (should (pi-coding-agent--show-images-p)))
+    (let ((pi-coding-agent-show-images-in-chat nil))
+      (should-not (pi-coding-agent--show-images-p)))))
+
+(ert-deftest pi-coding-agent-test-show-images-p-input ()
+  "show-images-p respects input setting."
+  (with-temp-buffer
+    (pi-coding-agent-input-mode)
+    (let ((pi-coding-agent-show-images-in-input t))
+      (should (pi-coding-agent--show-images-p)))
+    (let ((pi-coding-agent-show-images-in-input nil))
+      (should-not (pi-coding-agent--show-images-p)))))
+
+(ert-deftest pi-coding-agent-test-show-images-p-other ()
+  "show-images-p returns nil in other modes."
+  (with-temp-buffer
+    (should-not (pi-coding-agent--show-images-p))))
+
+(ert-deftest pi-coding-agent-test-image-file-p-png ()
+  "image-file-p recognizes PNG files."
+  (let ((tmp (make-temp-file "pi-test-" nil ".png")))
+    (unwind-protect
+        (should (equal (pi-coding-agent--image-file-p tmp)
+                       "image/png"))
+      (delete-file tmp))))
+
+(ert-deftest pi-coding-agent-test-image-file-p-jpg ()
+  "image-file-p recognizes JPG files."
+  (let ((tmp (make-temp-file "pi-test-" nil ".jpg")))
+    (unwind-protect
+        (should (equal (pi-coding-agent--image-file-p tmp)
+                       "image/jpeg"))
+      (delete-file tmp))))
+
+(ert-deftest pi-coding-agent-test-image-file-p-text ()
+  "image-file-p returns nil for text files."
+  (let ((tmp (make-temp-file "pi-test-" nil ".txt")))
+    (unwind-protect
+        (should-not (pi-coding-agent--image-file-p tmp))
+      (delete-file tmp))))
+
+(ert-deftest pi-coding-agent-test-image-file-p-nonexistent ()
+  "image-file-p returns nil for nonexistent files."
+  (should-not
+   (pi-coding-agent--image-file-p "/nonexistent/file.png")))
+
+(ert-deftest pi-coding-agent-test-image-file-p-nil ()
+  "image-file-p returns nil for nil input."
+  (should-not (pi-coding-agent--image-file-p nil)))
+
+(ert-deftest pi-coding-agent-test-attach-image-file ()
+  "attach-image-file reads and stores pending image."
+  (let ((tmp (make-temp-file "pi-test-" nil ".png")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmp
+            (set-buffer-multibyte nil)
+            (insert (base64-decode-string
+                     pi-coding-agent-test--png-base64)))
+          (with-temp-buffer
+            (pi-coding-agent-input-mode)
+            (let ((pi-coding-agent--pending-images nil)
+                  (pi-coding-agent-show-images-in-input nil))
+              (should (pi-coding-agent--attach-image-file tmp))
+              (should (= 1 (length
+                            pi-coding-agent--pending-images)))
+              (should (string-match-p
+                       "\\[image: image/png"
+                       (buffer-string))))))
+      (delete-file tmp))))
+
+(ert-deftest pi-coding-agent-test-attach-non-image-returns-nil ()
+  "attach-image-file returns nil for non-image files."
+  (let ((tmp (make-temp-file "pi-test-" nil ".txt")))
+    (unwind-protect
+        (with-temp-buffer
+          (let ((pi-coding-agent--pending-images nil))
+            (should-not
+             (pi-coding-agent--attach-image-file tmp))
+            (should (null pi-coding-agent--pending-images))))
+      (delete-file tmp))))
+
+(ert-deftest pi-coding-agent-test-chat-image-keybinding ()
+  "I key is bound to toggle-images-in-chat in chat mode."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (should (eq (key-binding (kbd "I"))
+                #'pi-coding-agent-toggle-images-in-chat))))
+
+(ert-deftest pi-coding-agent-test-message-start-user-with-images ()
+  "message_start user role renders attached images."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent--local-user-message nil)
+          (pi-coding-agent--assistant-header-shown nil)
+          (pi-coding-agent-show-images-in-chat nil)
+          (pi-coding-agent--streaming-marker (point-min-marker))
+          (pi-coding-agent--image-overlays nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--handle-display-event
+       `(:type "message_start"
+         :message (:role "user"
+                   :content
+                   [(:type "text" :text "Look at this")
+                    (:type "image"
+                     :data ,pi-coding-agent-test--png-base64
+                     :mimeType "image/png")])))
+      (should (string-match-p "\\[image: image/png"
+                              (buffer-string)))
+      (should (string-match-p "Look at this"
+                              (buffer-string))))))
 
 (provide 'pi-coding-agent-render-test)
 ;;; pi-coding-agent-render-test.el ends here
