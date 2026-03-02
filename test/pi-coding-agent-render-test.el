@@ -4751,5 +4751,137 @@ causing column misalignment when horizontally scrolling."
         (pi-coding-agent--prepare-and-send "/my-extension arg")))
     (should (equal prompt-sent "/my-extension arg"))))
 
+;;; Thinking Block Toggle
+
+(ert-deftest pi-coding-agent-test-thinking-toggle-keybinding ()
+  "T key is bound to toggle-thinking in chat mode."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (should (eq (key-binding (kbd "T"))
+                #'pi-coding-agent-toggle-thinking))))
+
+(ert-deftest pi-coding-agent-test-thinking-end-creates-overlay ()
+  "thinking_end creates overlay over thinking block."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-thinking t)
+          (pi-coding-agent--thinking-overlays nil)
+          (pi-coding-agent--streaming-marker (point-min-marker))
+          (pi-coding-agent--message-start-marker nil)
+          (pi-coding-agent--in-thinking-block nil)
+          (pi-coding-agent--thinking-marker nil)
+          (pi-coding-agent--thinking-start-marker nil)
+          (pi-coding-agent--thinking-raw nil)
+          (pi-coding-agent--thinking-block-start nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--display-thinking-start)
+      (pi-coding-agent--display-thinking-delta "Hello world")
+      (pi-coding-agent--display-thinking-end nil)
+      (should (= 1 (length pi-coding-agent--thinking-overlays)))
+      (let ((ov (car pi-coding-agent--thinking-overlays)))
+        (should (overlay-get ov 'pi-coding-agent-thinking-block))
+        ;; Not collapsed when show-thinking is t
+        (should-not (overlay-get ov 'display))))))
+
+(ert-deftest pi-coding-agent-test-thinking-end-collapses-when-hidden ()
+  "thinking_end collapses overlay when show-thinking is nil."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-thinking nil)
+          (pi-coding-agent--thinking-overlays nil)
+          (pi-coding-agent--streaming-marker (point-min-marker))
+          (pi-coding-agent--message-start-marker nil)
+          (pi-coding-agent--in-thinking-block nil)
+          (pi-coding-agent--thinking-marker nil)
+          (pi-coding-agent--thinking-start-marker nil)
+          (pi-coding-agent--thinking-raw nil)
+          (pi-coding-agent--thinking-block-start nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--display-thinking-start)
+      (pi-coding-agent--display-thinking-delta "Some thought")
+      (pi-coding-agent--display-thinking-end nil)
+      (should (= 1 (length pi-coding-agent--thinking-overlays)))
+      (let ((ov (car pi-coding-agent--thinking-overlays)))
+        (should (overlay-get ov 'display))
+        (should (string-match-p "thinking…"
+                                (overlay-get ov 'display)))))))
+
+(ert-deftest pi-coding-agent-test-toggle-thinking-expands ()
+  "toggle-thinking expands collapsed thinking blocks."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-thinking nil)
+          (pi-coding-agent--thinking-overlays nil)
+          (pi-coding-agent--streaming-marker (point-min-marker))
+          (pi-coding-agent--message-start-marker nil)
+          (pi-coding-agent--in-thinking-block nil)
+          (pi-coding-agent--thinking-marker nil)
+          (pi-coding-agent--thinking-start-marker nil)
+          (pi-coding-agent--thinking-raw nil)
+          (pi-coding-agent--thinking-block-start nil)
+          (pi-coding-agent--input-buffer nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--display-thinking-start)
+      (pi-coding-agent--display-thinking-delta "Deep thought")
+      (pi-coding-agent--display-thinking-end nil)
+      (should (overlay-get
+               (car pi-coding-agent--thinking-overlays) 'display))
+      (pi-coding-agent-toggle-thinking)
+      (should pi-coding-agent-show-thinking)
+      (should-not (overlay-get
+                   (car pi-coding-agent--thinking-overlays)
+                   'display)))))
+
+(ert-deftest pi-coding-agent-test-toggle-thinking-collapses ()
+  "toggle-thinking collapses expanded thinking blocks."
+  (with-temp-buffer
+    (pi-coding-agent-chat-mode)
+    (let ((pi-coding-agent-show-thinking t)
+          (pi-coding-agent--thinking-overlays nil)
+          (pi-coding-agent--streaming-marker (point-min-marker))
+          (pi-coding-agent--message-start-marker nil)
+          (pi-coding-agent--in-thinking-block nil)
+          (pi-coding-agent--thinking-marker nil)
+          (pi-coding-agent--thinking-start-marker nil)
+          (pi-coding-agent--thinking-raw nil)
+          (pi-coding-agent--thinking-block-start nil)
+          (pi-coding-agent--input-buffer nil)
+          (inhibit-read-only t))
+      (pi-coding-agent--display-thinking-start)
+      (pi-coding-agent--display-thinking-delta "Expanded")
+      (pi-coding-agent--display-thinking-end nil)
+      (should-not (overlay-get
+                   (car pi-coding-agent--thinking-overlays)
+                   'display))
+      (pi-coding-agent-toggle-thinking)
+      (should-not pi-coding-agent-show-thinking)
+      (should (overlay-get
+               (car pi-coding-agent--thinking-overlays)
+               'display)))))
+
+(ert-deftest pi-coding-agent-test-collapse-shows-line-count ()
+  "Collapsed indicator shows line count."
+  (with-temp-buffer
+    (insert "> Line 1\n> Line 2\n> Line 3\n\n")
+    (let ((ov (make-overlay (point-min) (point-max))))
+      (pi-coding-agent--collapse-thinking-overlay ov)
+      ;; count-lines gives 4 (includes trailing blank line)
+      (should (string-match-p "4 lines"
+                              (overlay-get ov 'display))))))
+
+(ert-deftest pi-coding-agent-test-expand-clears-display ()
+  "Expanding overlay clears display property."
+  (with-temp-buffer
+    (insert "> thought\n\n")
+    (let ((ov (make-overlay (point-min) (point-max))))
+      (overlay-put ov 'display "collapsed")
+      (pi-coding-agent--expand-thinking-overlay ov)
+      (should-not (overlay-get ov 'display)))))
+
+(ert-deftest pi-coding-agent-test-thinking-menu-entry ()
+  "Transient menu has T key for toggle thinking."
+  (transient-setup 'pi-coding-agent-menu)
+  (should (pi-coding-agent-test--suffix-key-bound-p "T")))
+
 (provide 'pi-coding-agent-render-test)
 ;;; pi-coding-agent-render-test.el ends here

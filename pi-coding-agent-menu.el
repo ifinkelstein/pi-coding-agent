@@ -217,6 +217,12 @@ Prefers session name over first message when available."
 (defun pi-coding-agent--reset-session-state ()
   "Reset all session-specific state for a new session.
 Call this when starting a new session to ensure no stale state persists."
+  ;; Clean up thinking overlays
+  (mapc #'delete-overlay pi-coding-agent--thinking-overlays)
+  (setq pi-coding-agent--thinking-overlays nil)
+  (when (markerp pi-coding-agent--thinking-block-start)
+    (set-marker pi-coding-agent--thinking-block-start nil))
+  (setq pi-coding-agent--thinking-block-start nil)
   (dolist (marker (list pi-coding-agent--message-start-marker
                         pi-coding-agent--streaming-marker
                         pi-coding-agent--thinking-marker
@@ -862,7 +868,9 @@ Uses commands from pi's `get_commands' RPC."
     ("t" "thinking" pi-coding-agent-cycle-thinking)]
    ["Info"
     ("i" "stats" pi-coding-agent-session-stats)
-    ("y" "copy last" pi-coding-agent-copy-last-message)]]
+    ("y" "copy last" pi-coding-agent-copy-last-message)]
+   ["Display"
+    ("T" "toggle thinking" pi-coding-agent-toggle-thinking)]]
   [["Actions"
     ("RET" "send" pi-coding-agent-send)
     ("s" "steer" pi-coding-agent-queue-steering)

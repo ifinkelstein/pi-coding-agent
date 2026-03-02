@@ -296,7 +296,10 @@ separated from preceding content."
             (setq pi-coding-agent--thinking-start-marker
                   (copy-marker start nil))
             (setq pi-coding-agent--thinking-marker
-                  (copy-marker (point) nil))))))))
+                  (copy-marker (point) nil))
+            ;; Record start for thinking overlay creation
+            (setq pi-coding-agent--thinking-block-start
+                  (copy-marker start nil))))))))
 
 (defun pi-coding-agent--display-thinking-delta (delta)
   "Display streaming thinking DELTA in the current thinking block.
@@ -322,7 +325,9 @@ Normalizes boundary and paragraph whitespace while streaming."
 
 (defun pi-coding-agent--display-thinking-end (_content)
   "End thinking block (blockquote).
-CONTENT is ignored - we use what was already streamed."
+CONTENT is ignored - we use what was already streamed.
+Creates an overlay for the thinking block and collapses it
+if `pi-coding-agent-show-thinking' is nil."
   (when pi-coding-agent--streaming-marker
     (setq pi-coding-agent--in-thinking-block nil)
     (let ((inhibit-read-only t))
@@ -336,7 +341,58 @@ CONTENT is ignored - we use what was already streamed."
             ;; Fallback for malformed event streams that skip thinking_start.
             (goto-char (pi-coding-agent--thinking-insert-position))
             (pi-coding-agent--ensure-blank-line-separator))
-          (pi-coding-agent--reset-thinking-state))))))
+          ;; Create overlay for the thinking block
+          (let ((end-pos (point)))
+            (when (and pi-coding-agent--thinking-block-start
+                       (marker-position
+                        pi-coding-agent--thinking-block-start))
+              (let* ((start (marker-position
+                             pi-coding-agent--thinking-block-start))
+                     (ov (make-overlay start end-pos nil nil nil)))
+                (overlay-put ov 'pi-coding-agent-thinking-block t)
+                (push ov pi-coding-agent--thinking-overlays)
+                (unless pi-coding-agent-show-thinking
+                  (pi-coding-agent--collapse-thinking-overlay ov))
+                (set-marker
+                 pi-coding-agent--thinking-block-start nil)
+                (setq pi-coding-agent--thinking-block-start nil))))
+          (pi-coding-agent--reset-thinking-state)))))
+  ;; Fontify the thinking block for proper blockquote display
+  (when-let* ((ov (car pi-coding-agent--thinking-overlays))
+              ((overlay-buffer ov)))
+    (font-lock-ensure (overlay-start ov) (overlay-end ov))))
+
+(defun pi-coding-agent--collapse-thinking-overlay (ov)
+  "Collapse thinking overlay OV to show a single indicator line."
+  (let ((line-count (count-lines (overlay-start ov)
+                                 (overlay-end ov))))
+    (overlay-put ov 'display
+                 (propertize
+                  (format "> [thinking… (%d line%s)]\n\n"
+                          line-count
+                          (if (= line-count 1) "" "s"))
+                  'face 'pi-coding-agent-collapsed-indicator))))
+
+(defun pi-coding-agent--expand-thinking-overlay (ov)
+  "Expand thinking overlay OV to show full content."
+  (overlay-put ov 'display nil))
+
+(defun pi-coding-agent-toggle-thinking ()
+  "Toggle display of thinking blocks in the chat buffer.
+When thinking is hidden, blocks collapse to a single indicator line.
+When shown, the full blockquote content is visible."
+  (interactive)
+  (setq pi-coding-agent-show-thinking
+        (not pi-coding-agent-show-thinking))
+  (when-let* ((chat-buf (pi-coding-agent--get-chat-buffer)))
+    (with-current-buffer chat-buf
+      (dolist (ov pi-coding-agent--thinking-overlays)
+        (when (overlay-buffer ov)
+          (if pi-coding-agent-show-thinking
+              (pi-coding-agent--expand-thinking-overlay ov)
+            (pi-coding-agent--collapse-thinking-overlay ov))))))
+  (message "Pi: Thinking blocks %s"
+           (if pi-coding-agent-show-thinking "shown" "hidden")))
 
 (defun pi-coding-agent--display-agent-end ()
   "Finalize agent turn: normalize whitespace, handle abort, process queue.

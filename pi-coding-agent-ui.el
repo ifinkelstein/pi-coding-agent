@@ -71,6 +71,7 @@
 (declare-function pi-coding-agent-resume-session "pi-coding-agent-menu")
 (declare-function pi-coding-agent-select-model "pi-coding-agent-menu")
 (declare-function pi-coding-agent-cycle-thinking "pi-coding-agent-menu")
+(declare-function pi-coding-agent-toggle-thinking "pi-coding-agent-render")
 (declare-function pi-coding-agent-fork-at-point "pi-coding-agent-menu")
 
 ;; Optional: phscroll for horizontal table scrolling
@@ -144,6 +145,15 @@ Prevents huge single-line outputs from blowing up the chat buffer."
 (defcustom pi-coding-agent-context-error-threshold 90
   "Context usage percentage at which to show error color."
   :type 'natnum
+  :group 'pi-coding-agent)
+
+(defcustom pi-coding-agent-show-thinking t
+  "Whether to display thinking block content in the chat buffer.
+When non-nil, thinking blocks from thinking models are shown as
+blockquotes.  When nil, thinking blocks are collapsed to a single
+indicator line showing the number of hidden lines.
+Toggle with `T' in the chat buffer or via the transient menu."
+  :type 'boolean
   :group 'pi-coding-agent)
 
 (defcustom pi-coding-agent-visit-file-other-window t
@@ -366,6 +376,7 @@ escape targets.")
     (define-key map (kbd "<tab>") #'pi-coding-agent-toggle-tool-section)
     (define-key map (kbd "RET") #'pi-coding-agent-visit-file)
     (define-key map (kbd "<return>") #'pi-coding-agent-visit-file)
+    (define-key map (kbd "T") #'pi-coding-agent-toggle-thinking)
     map)
   "Keymap for `pi-coding-agent-chat-mode'.")
 
@@ -725,6 +736,14 @@ Used to rewrite thinking content in place after whitespace normalization.")
 (defvar-local pi-coding-agent--thinking-raw nil
   "Accumulated raw thinking deltas for the current thinking block.
 Normalized and re-rendered incrementally to avoid excess whitespace.")
+
+(defvar-local pi-coding-agent--thinking-block-start nil
+  "Marker for start of the current thinking block.
+Set on thinking_start, used on thinking_end to create the overlay.")
+
+(defvar-local pi-coding-agent--thinking-overlays nil
+  "List of overlays covering thinking blocks in the chat buffer.
+Used by `pi-coding-agent-toggle-thinking' to show/hide blocks.")
 
 (defvar-local pi-coding-agent--line-parse-state 'line-start
   "Parsing state for current line during streaming.
