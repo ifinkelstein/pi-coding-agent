@@ -71,6 +71,7 @@
 (declare-function pi-coding-agent-resume-session "pi-coding-agent-menu")
 (declare-function pi-coding-agent-select-model "pi-coding-agent-menu")
 (declare-function pi-coding-agent-cycle-thinking "pi-coding-agent-menu")
+(declare-function pi-coding-agent-select-thinking "pi-coding-agent-menu")
 (declare-function pi-coding-agent-fork-at-point "pi-coding-agent-menu")
 
 ;; Optional: phscroll for horizontal table scrolling
@@ -1317,8 +1318,8 @@ Removes common prefixes like \"Claude \" and suffixes like \" (latest)\"."
 
 (defvar pi-coding-agent--header-thinking-map
   (let ((map (make-sparse-keymap)))
-    (define-key map [header-line mouse-1] #'pi-coding-agent-cycle-thinking)
-    (define-key map [header-line mouse-2] #'pi-coding-agent-cycle-thinking)
+    (define-key map [header-line mouse-1] #'pi-coding-agent-select-thinking)
+    (define-key map [header-line mouse-2] #'pi-coding-agent-select-thinking)
     map)
   "Keymap for clicking thinking level in header-line.")
 
@@ -1384,7 +1385,7 @@ Returns extension statuses joined with \" · \", or empty string."
      (concat " • "
              (propertize thinking
                          'mouse-face 'highlight
-                         'help-echo "mouse-1: Cycle thinking level"
+                         'help-echo "mouse-1: Select thinking level"
                          'local-map pi-coding-agent--header-thinking-map)))
    " " activity-phase-str))
 

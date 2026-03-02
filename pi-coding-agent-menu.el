@@ -483,20 +483,111 @@ Optional INITIAL-INPUT pre-fills the completion prompt for filtering."
                                (force-mode-line-update))
                              (message "Pi: Model set to %s" choice)))))))))
 
-(defun pi-coding-agent-cycle-thinking ()
-  "Cycle through thinking levels."
+(defconst pi-coding-agent--thinking-level-descriptions
+  '(("off"     . "No reasoning")
+    ("minimal" . "Very brief reasoning (~1k tokens)")
+    ("low"     . "Light reasoning (~2k tokens)")
+    ("medium"  . "Moderate reasoning (~8k tokens)")
+    ("high"    . "Deep reasoning (~16k tokens)")
+    ("xhigh"   . "Maximum reasoning (~32k tokens)"))
+  "Alist mapping thinking level names to descriptions.")
+
+(defconst pi-coding-agent--xhigh-model-ids
+  '("gpt-5.1-codex-max" "gpt-5.2" "gpt-5.2-codex")
+  "Model IDs that support the xhigh thinking level.")
+
+(defun pi-coding-agent--available-thinking-levels ()
+  "Return list of available thinking levels for the current model.
+Derives levels from the model object in state.
+Returns (\"off\") if model does not support thinking."
+  (let* ((model (plist-get pi-coding-agent--state :model))
+         (reasoning (and model (plist-get model :reasoning)))
+         (model-id (and model (plist-get model :id))))
+    (cond
+     ((not (eq reasoning t))
+      '("off"))
+     ((member model-id pi-coding-agent--xhigh-model-ids)
+      '("off" "minimal" "low" "medium" "high" "xhigh"))
+     (t
+      '("off" "minimal" "low" "medium" "high")))))
+
+(defun pi-coding-agent-select-thinking ()
+  "Select a thinking level interactively.
+Shows a selector with descriptions when 3+ levels are available.
+Falls back to cycling for 2 or fewer levels."
   (interactive)
-  (when-let ((proc (pi-coding-agent--get-process))
-             (chat-buf (pi-coding-agent--get-chat-buffer)))
-    (pi-coding-agent--rpc-async proc '(:type "cycle_thinking_level")
-                   (lambda (response)
-                     (when (and (plist-get response :success)
-                                (buffer-live-p chat-buf))
-                       (with-current-buffer chat-buf
-                         (pi-coding-agent--update-state-from-response response)
-                         (force-mode-line-update)
-                         (message "Pi: Thinking level: %s"
-                                  (plist-get pi-coding-agent--state :thinking-level))))))))
+  (let* ((proc (pi-coding-agent--get-process))
+         (chat-buf (pi-coding-agent--get-chat-buffer)))
+    (unless proc
+      (user-error "No pi process running"))
+    (let* ((levels (with-current-buffer chat-buf
+                     (pi-coding-agent--available-thinking-levels)))
+           (current (or (plist-get
+                         (buffer-local-value
+                          'pi-coding-agent--state chat-buf)
+                         :thinking-level)
+                        "off")))
+      (if (<= (length levels) 2)
+          ;; 2 or fewer levels: just cycle
+          (pi-coding-agent--rpc-async
+           proc '(:type "cycle_thinking_level")
+           (lambda (response)
+             (when (and (plist-get response :success)
+                        (buffer-live-p chat-buf))
+               (with-current-buffer chat-buf
+                 (pi-coding-agent--update-state-from-response
+                  response)
+                 (force-mode-line-update)
+                 (message "Pi: Thinking level: %s"
+                          (plist-get pi-coding-agent--state
+                                     :thinking-level))))))
+        ;; 3+ levels: show selector with descriptions
+        (let* ((choices
+                (mapcar
+                 (lambda (level)
+                   (let ((desc (or (cdr (assoc
+                                         level
+                                         pi-coding-agent--thinking-level-descriptions))
+                                   "")))
+                     (cons (format "%-8s  %s" level desc)
+                           level)))
+                 levels))
+               (choice-strings (mapcar #'car choices))
+               (default-choice
+                (car (cl-find-if
+                      (lambda (c) (equal (cdr c) current))
+                      choices)))
+               (selected
+                (completing-read
+                 (format "Thinking (current: %s): " current)
+                 (lambda (string pred action)
+                   (if (eq action 'metadata)
+                       '(metadata
+                         (display-sort-function . identity))
+                     (complete-with-action
+                      action choice-strings string pred)))
+                 nil t nil nil default-choice))
+               (level (cdr (assoc selected choices))))
+          (when (and level (not (equal level current)))
+            (pi-coding-agent--rpc-async proc
+              (list :type "set_thinking_level" :level level)
+              (lambda (response)
+                (when (and (plist-get response :success)
+                           (buffer-live-p chat-buf))
+                  (with-current-buffer chat-buf
+                    (plist-put pi-coding-agent--state
+                               :thinking-level level)
+                    (pi-coding-agent--update-state-from-response
+                     response)
+                    (force-mode-line-update)
+                    (message "Pi: Thinking level: %s"
+                             level)))))))))))
+
+(define-obsolete-function-alias
+  'pi-coding-agent-cycle-thinking
+  'pi-coding-agent-select-thinking
+  "1.4.0"
+  "Use `pi-coding-agent-select-thinking' for interactive selection.")
 
 ;;;; Session Info and Actions
 
@@ -859,7 +950,7 @@ Uses commands from pi's `get_commands' RPC."
     ("f" "fork" pi-coding-agent-fork)]]
   [["Model"
     ("m" "select" pi-coding-agent-select-model)
-    ("t" "thinking" pi-coding-agent-cycle-thinking)]
+    ("t" "thinking" pi-coding-agent-select-thinking)]
    ["Info"
     ("i" "stats" pi-coding-agent-session-stats)
     ("y" "copy last" pi-coding-agent-copy-last-message)]]
